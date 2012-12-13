@@ -23,10 +23,10 @@ from Queue import Empty, Queue
 from os import environ, listdir, makedirs, utime, _exit as os_exit
 
 #Append sys.path by Hugo
-path.append("/root/OBJgw/s3backer")
+path.append("/opt/objgw/s3backer")
 from attacher import mount, loop_map, lvm_pv_binding, lvm_vg_binding
 
-OBJgw_path = "/root/OBJgw/"
+OBJgw_path = "/opt/objgw/"
 cf=ConfigParser()
 cf.read('%s/objgw.conf' % OBJgw_path)
 
@@ -154,6 +154,28 @@ def gw_create(parser=None,args=None):
     #Create Volume Group based
     lvm_vg_binding(vg_name,loop_list)
    
+    
+def gw_delete(parser=None,args=None):
+    vg_name = args[1]
+    
+    '''check if the volume group is onlinei, stop it first'''
+    if subprocess.call(["vgck",vg_name])== 0:
+        gw_stop(args=vg_name)
+
+    #delete pv_containers
+    
+    #delete vg_info file from swift
+
+
+#def gw_stop((parser=None,args=None):
+    #generate loop_dev lost
+    #stop all lvs first , set to stop via lvchange -an %NAME
+
+    #vgremove
+    subprocess.call(["vgremove",vg_name])
+    
+    #unset loop base on loop_dev list
+    #umount /srv/pv_name
 
 
 
