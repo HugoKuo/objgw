@@ -20,7 +20,10 @@ from optparse import OptionParser, SUPPRESS_HELP
 from swiftclient import Connection, ClientException, HTTPException
 from ConfigParser import ConfigParser
 from Queue import Empty, Queue
-from os import environ, listdir, makedirs, utime, _exit as os_exit
+from os import write, environ, listdir, makedirs, utime, _exit as os_exit
+import subprocess
+
+
 
 #Append sys.path by Hugo
 path.append("/opt/objgw/s3backer")
@@ -29,6 +32,28 @@ from attacher import mount, loop_map, lvm_pv_binding, lvm_vg_binding
 OBJgw_path = "/opt/objgw/"
 cf=ConfigParser()
 cf.read('%s/objgw.conf' % OBJgw_path)
+
+def check_vg_tables():
+    conn=get_conn()
+    try:
+        conn.head_container("vg_tables")
+    except:
+        print "vg_tables does not exist , in progress to initial it"
+        conn.put_container("vg_tables")
+
+def gen_vg_info(vg_name,size,pv_numbers,pv_list):
+    #vg_name="vg_cloudena_"+vg_name 
+    f = open('/tmp/'+vg_name,"w")
+    f.write('[INFO]\n')
+    f.write('vg_name = '+vg_name+'\n')
+    f.write('size = '+str(size)+'\n')
+    f.write('pv_numbers = '+str(pv_numbers)+'\n')
+    f.write('pv_list = '+str(pv_list))
+    f.close()
+    vg_info = "/tmp/"+vg_name
+    return vg_info
+
+        
 
 def mkdirs(path):
     try:
@@ -84,8 +109,9 @@ def split_headers(options, prefix='', error_queue=None):
 
 def gw_auth(parser=None, args=None):
     conn=get_conn()
-    return conn.head_account()
-
+    a=conn.head_account()
+    check_vg_tables()
+    return a
 
 def gw_list_pvs(parser=None, args=None):
     conn=get_conn()
@@ -135,8 +161,12 @@ def gw_create(parser=None,args=None):
         pv_dict['loop']=x
         pv_dict['size']=single_size    
         pv_list.append(pv_dict)
-    print pv_list
-     
+    
+    #Create vg info and push into vg_tables
+    vg_info=gen_vg_info(vg_name,str(single_size*pv_count),pv_count,pv_list)
+    conn.put_object(container="vg_tables",obj=vg_name,
+                    contents=open(vg_info,"r").read())
+    
     #Create mount point on local host and swift containers , also mount to /srv/
     
     headers = split_headers(options={}, prefix='X-Container-Meta-', error_queue=None) 
@@ -157,27 +187,56 @@ def gw_create(parser=None,args=None):
     
 def gw_delete(parser=None,args=None):
     vg_name = args[1]
-    
+    conn=get_conn()
+    pv_count=int(cf.get('S3BACKER','PV_COUNT'))
+    pv_list=[]
+
     '''check if the volume group is onlinei, stop it first'''
-    if subprocess.call(["vgck",vg_name])== 0:
-        gw_stop(args=vg_name)
+    if subprocess.call(["vgck",cf.get('LVM','VG_PREFIX')+"_"+vg_name])== 0:
+        gw_stop(vg_name=vg_name)
 
-    #delete pv_containers
+    #delete pv_containers , call swiftclient's client.py delete_object L#883
+    for x in range(pv_count):
+        pv_name="pv_"+vg_name+"_"+str(x)
+        subprocess.call(["swift",
+                        "-A",cf.get('DEFAULT','AUTH_URL'),
+                        "-U",cf.get('DEFAULT','ACCOUNT'),
+                        "-K",cf.get('DEFAULT','KEY'),
+                        "delete",pv_name])
+                        
     
-    #delete vg_info file from swift
+    #conn.delete_container("pv_"+vg_name+"_"+str(x))
+    conn.delete_object(container="vg_tables",obj=cf.get('LVM','VG_PREFIX')+"_"+vg_name)
 
 
-#def gw_stop((parser=None,args=None):
-    #generate loop_dev lost
-    #stop all lvs first , set to stop via lvchange -an %NAME
+def gw_stop(parser=None,vg_name=None):
+    print vg_name
+    if not type(vg_name)==str:
+        vg_name = args[1]
+        print vg_name
+    else:
+        vg_name=vg_name
+    mount_dir = "/srv"
+    mount_point = mount_dir+"/pv_"+vg_name+"*"
+    mount_list = []
+    #generate loop_dev list
+    all_list=[i.split() for i in subprocess.check_output('pvs').splitlines()[1:]]
+    loop_dev = []
+    for x in range(len(all_list)):
+        if all_list[x][1]==cf.get('LVM','VG_PREFIX')+"_"+vg_name:
+            loop_dev.append(all_list[x][0])
 
-    #vgremove
-    subprocess.call(["vgremove",vg_name])
     
     #unset loop base on loop_dev list
+    subprocess.call([' '.join(['losetup','-d',' '.join(loop_dev)])],shell=True)
+   
+    for x in range(len(all_list)):
+        mount_list.append(mount_dir+"/"+"pv_"+vg_name+"_"+str(x))
+    print mount_list
     #umount /srv/pv_name
-
-
+    subprocess.call([' '.join(['umount',' '.join(mount_list)])],shell=True)
+    subprocess.call([' '.join(['rm','-r',' '.join(mount_list)])],shell=True)
+    return
 
 def parse_args(parser, args, enforce_requires=True):
     return 1, args
@@ -194,7 +253,6 @@ Commands:
     stop
     list_pvs
     list_vgs
-    list_lvs
 
 Example:
     %%prog list_pvs
@@ -204,7 +262,7 @@ Example:
     (options, args) = parse_args(parser, argv[1:], enforce_requires=False)
     parser.enable_interspersed_args()
 
-    commands = ('auth', 'list_pvs', 'list_vgs', 'list_lvs', 'create', 'stop', 'start', 'delete')
+    commands = ('auth', 'list_pvs', 'list_vgs', 'create', 'stop', 'start', 'delete')
     if not args or args[0] not in commands:
         parser.print_usage()
         if args:
