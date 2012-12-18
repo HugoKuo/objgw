@@ -15,10 +15,12 @@
 # limitations under the License.
 # AUTHOR : Hugo Kuo
 
+import signal
 
 from optparse import OptionParser, SUPPRESS_HELP
 from ConfigParser import ConfigParser
 from sys import path, argv
+from Queue import Empty, Queue
 
 #Append sys.path by Hugo
 path.append("/opt/objgw/s3backer")
@@ -73,12 +75,25 @@ Example:
     parser.add_option('-q', '--quiet', action='store_const', dest='verbose',
                       const=0, default=1, help='Suppress Status output')
     parser.disable_interspersed_args()
-    print argv[1:] 
     (options, args) = parser.parse_args()
-    print "1_",args
     if not args:
         args = ['-h']
     (options, args) = parser.parse_args(args)
-    print args
+    parser.enable_interspersed_args()
+    
+    commands = ('auth', 'stat', 'list', 'create', 'delete', 'start', 'stop')
+    if not args or args[0] not in commands:
+        parser.print_usage()
+        if args:
+            exit('no such command: %s' % args[0])
+        exit()
 
+    #signal.signal(signal.SIGINT, attempt_graceful_exit)
+    print_queue = Queue(10000)    
+    
+    def _print(item):
+        if isinstance(item, unicode):
+            item = item.encode('utf8')
+        print item
 
+    print_thread = QueueFunctionThread(print_queue, _print)
