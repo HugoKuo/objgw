@@ -1,0 +1,11 @@
+#Creat a customize name for loop_devices
+
+mknod %name b 7 %minor_id 
+example : 
+
+rm /dev/loop50
+mknod /dev/hugo-loop-50 b 7 50
+
+
+
+
